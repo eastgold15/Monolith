@@ -1,7 +1,7 @@
 {
   "$schema": "./registry.schema.json",
   "version": "1.0.0",
-  "registryUrl": "https://raw.githubusercontent.com/your-org/Monolith/main/registry.json",
+  "registryUrl": "https://raw.githubusercontent.com/eastgold15/Monolith/main/registry.json",
   "modules": {
     "auth": {
       "name": "Authentication",

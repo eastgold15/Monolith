@@ -27,7 +27,7 @@ export class RegistryManager {
 
     // 远程模式：从 GitHub 下载
     const registryUrl = this.options.registryUrl ||
-      'https://raw.githubusercontent.com/your-org/Monolith/main/registry.json';
+      'https://raw.githubusercontent.com/eastgold15/Monolith/main/registry.json';
 
     logger.debug('正在下载 registry...', { url: registryUrl });
 
@@ -50,22 +50,31 @@ export class RegistryManager {
    * 获取本地 Registry
    */
   private async getLocalRegistry(): Promise<RegistryConfig> {
-    const { resolve } = await import('node:path');
+    const { resolve, dirname } = await import('node:path');
     const { readFile } = await import('node:fs/promises');
+    const { fileURLToPath } = await import('node:url');
 
-    const registryPath = resolve(this.options.cwd, 'registry.json');
+    // 优先级：项目根目录 > CLI 包目录
+    const possiblePaths = [
+      resolve(this.options.cwd, 'registry.json'),
+      // 获取 CLI 包内的 registry.json（从编译后的 JS 文件位置推导）
+      resolve(dirname(fileURLToPath(import.meta.url)), '../../registry.json'),
+    ];
 
-    try {
-      const content = await readFile(registryPath, 'utf-8');
-      const registry = JSON.parse(content) as RegistryConfig;
-      this.cachedRegistry = registry;
-      logger.debug('使用本地 registry:', { path: registryPath });
-      return registry;
-    } catch (error) {
-      throw new Error(
-        `无法读取 registry.json: ${error instanceof Error ? error.message : String(error)}`
-      );
+    for (const registryPath of possiblePaths) {
+      try {
+        const content = await readFile(registryPath, 'utf-8');
+        const registry = JSON.parse(content) as RegistryConfig;
+        this.cachedRegistry = registry;
+        logger.debug('使用本地 registry:', { path: registryPath });
+        return registry;
+      } catch {
+        // 继续尝试下一个路径
+        continue;
+      }
     }
+
+    throw new Error('无法找到 registry.json 文件');
   }
 
   /**
