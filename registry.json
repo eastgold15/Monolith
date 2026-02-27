@@ -149,8 +149,7 @@
       "tags": ["user", "profile", "management"],
       "category": "core",
       "dependencies": [
-        { "name": "zod", "version": "^3.23.0" },
-        { "name": "@elysiajs/cuid", "version": "^1.1.0" }
+        { "name": "zod", "version": "^3.23.0" }
       ],
       "devDependencies": [],
       "requires": ["auth"],

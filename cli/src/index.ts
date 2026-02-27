@@ -72,7 +72,7 @@ ${pc.white('快速开始:')}
   ${pc.cyan('monolith add auth')} - 安装认证模块
 
 ${pc.white('更多信息:')}
-  ${pc.dim('https://github.com/your-org/Monolith')}`,
+  ${pc.dim('https://github.com/eastgold15/Monolith')}`,
       });
     }
 
