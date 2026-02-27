@@ -2,9 +2,10 @@ import type { ModuleConfig, ModuleFile, Dependency, EnvVariable } from '../types
 import type { RegistryManager } from './registry.js';
 import { logger } from './logger.js';
 import { resolve, join, dirname, relative } from 'node:path';
-import { mkdir, writeFile, readFile, existsSync } from 'node:fs/promises';
+import { mkdir, writeFile, readFile } from 'node:fs/promises';
 import { execSync } from 'node:child_process';
 import { Project, SyntaxKind, SourceFile } from 'ts-morph';
+import { existsSync } from 'node:fs';
 
 /**
  * 文件操作结果

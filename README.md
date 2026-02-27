@@ -18,7 +18,12 @@
 ## 📦 安装 CLI
 
 ```bash
-# 使用 bunx 直接运行
+# 从本地开发
+cd Monolith
+bun install
+bun run dev list
+
+# 或使用 bunx 直接运行（需要先发布）
 bunx monolith add auth
 
 # 或全局安装

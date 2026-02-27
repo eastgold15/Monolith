@@ -1,14 +1,18 @@
-import { Command } from 'commander';
-import * as p from '@clack/prompts';
+/**
+ * update 命令 - 更新已安装的模块
+ */
+
+import { defineCommand } from 'citty';
+import { consola } from 'consola';
 import pc from 'picocolors';
+import prompts from 'prompts';
 import { resolve } from 'node:path';
 import { cwd } from 'node:process';
 import { createHash } from 'node:crypto';
-import { readFile, existsSync } from 'node:fs/promises';
-import * as diff from 'diff';
+import { readFile } from 'node:fs/promises';
 import { RegistryManager } from '../utils/registry.js';
 import type { ModuleConfig, ModuleFile } from '../types/index.js';
-import { logger } from '../utils/logger.js';
+import { existsSync } from 'node:fs';
 
 /**
  * 更新检查结果
@@ -24,34 +28,44 @@ interface UpdateInfo {
   }>;
 }
 
-/**
- * update 命令 - 更新已安装的模块
- */
-export const updateCommand = new Command('update')
-  .description('更新已安装的模块')
-  .argument('[module]', '模块名称 (不指定则检查所有已安装模块)')
-  .option('-d, --diff', '显示文件差异')
-  .option('-y, --yes', '自动应用所有更新')
-  .action(async (moduleName: string | undefined, options) => {
-    const globalOptions = updateCommand.parent?.opts() || {};
+export default defineCommand({
+  meta: {
+    name: 'update',
+    description: '更新已安装的模块',
+  },
+  args: {
+    module: {
+      type: 'string',
+      description: '模块名称 (不指定则检查所有已安装模块)',
+    },
+    diff: {
+      type: 'boolean',
+      description: '显示文件差异',
+      default: false,
+    },
+  },
+  async run(ctx) {
+    const globalOptions = ctx.parent?.args || {};
+    const moduleName = ctx.args.module as string | undefined;
+    const showDiff = ctx.args.diff as boolean;
     const projectRoot = resolve(cwd());
 
-    try {
-      p.intro(pc.bgCyan(pc.black(' Monolith Update ')));
+    consola.wrapConsole();
 
+    try {
       const registryManager = new RegistryManager({
         cwd: projectRoot,
-        registryUrl: globalOptions.registryUrl,
-        debug: globalOptions.debug,
-        local: globalOptions.local,
+        registryUrl: globalOptions.registryUrl as string | undefined,
+        debug: globalOptions.debug as boolean,
+        local: globalOptions.local as boolean,
       });
 
       // 获取本地已安装的模块
       const localModules = await getLocalModules(projectRoot);
 
       if (localModules.length === 0) {
-        p.cancel(pc.yellow('没有检测到已安装的模块'));
-        p.outro(`使用 ${pc.cyan('monolith add <module>')} 安装模块`);
+        consola.warn('没有检测到已安装的模块');
+        consola.info(`使用 ${pc.cyan('monolith add <module>')} 安装模块`);
         return;
       }
 
@@ -61,13 +75,12 @@ export const updateCommand = new Command('update')
         : localModules;
 
       if (modulesToCheck.length === 0) {
-        p.cancel(pc.yellow(`模块 "${moduleName}" 未安装`));
+        consola.warn(`模块 "${pc.yellow(moduleName || '')}" 未安装`);
         return;
       }
 
       // 检查更新
-      const s = p.spinner();
-      s.start('检查更新...');
+      consola.start('检查更新...');
 
       const updates: UpdateInfo[] = [];
 
@@ -75,7 +88,7 @@ export const updateCommand = new Command('update')
         const remoteModule = await registryManager.getModule(localMod.module);
 
         if (!remoteModule) {
-          logger.warn(`模块 ${localMod.module} 在远程仓库中不存在`);
+          consola.warn(`模块 ${localMod.module} 在远程仓库中不存在`);
           continue;
         }
 
@@ -92,54 +105,55 @@ export const updateCommand = new Command('update')
         }
       }
 
-      s.stop(`检查完成，发现 ${updates.length} 个可用更新`);
+      consola.success(`检查完成，发现 ${pc.cyan(updates.length)} 个可用更新`);
 
       if (updates.length === 0) {
-        p.note(pc.dim('所有模块都是最新版本'), '更新检查');
-        p.outro(pc.green('✓ 没有可用更新'));
+        consola.success('所有模块都是最新版本');
         return;
       }
 
       // 显示更新信息
+      console.log();
       for (const update of updates) {
         const changedCount = update.changedFiles.filter(f => f.hasLocalChanges).length;
-        p.note(
-          `${pc.cyan(update.moduleName)}
-${pc.yellow('当前版本:')} ${pc.dim(update.currentVersion)}
-${pc.green('最新版本:')} ${pc.dim(update.latestVersion)}
-${pc.yellow('变更文件:')} ${update.changedFiles.length} 个${changedCount > 0 ? ` (${changedCount} 个有本地修改)` : ''}`,
-          '可用更新'
-        );
+        consola.log(`${pc.cyan('●')} ${pc.bold(update.moduleName)}`);
+        consola.log(`  ${pc.yellow('当前版本:')} ${pc.dim(update.currentVersion)}`);
+        consola.log(`  ${pc.green('最新版本:')} ${pc.dim(update.latestVersion)}`);
+        consola.log(`  ${pc.yellow('变更文件:')} ${update.changedFiles.length} 个${changedCount > 0 ? pc.red(` (${changedCount} 个有本地修改)`) : ''}`);
+        console.log();
       }
 
       // 确认更新
-      if (!globalOptions.yes && !options.yes) {
-        const shouldUpdate = await p.confirm({
+      if (!globalOptions.yes) {
+        const { confirmed } = await prompts({
+          type: 'confirm',
+          name: 'confirmed',
           message: '是否应用更新?',
-          initialValue: true,
+          initial: true,
         });
 
-        if (p.isCancel(shouldUpdate) || !shouldUpdate) {
-          p.cancel('更新已取消');
+        if (!confirmed) {
+          consola.warn('更新已取消');
           return;
         }
       }
 
       // 应用更新
       for (const update of updates) {
-        await applyUpdate(update, projectRoot, options.diff);
+        await applyUpdate(update, projectRoot, showDiff);
       }
 
-      p.outro(pc.green('✓ 更新完成!'));
+      consola.success('更新完成!');
 
     } catch (error) {
-      p.cancel(pc.red(`错误: ${error instanceof Error ? error.message : String(error)}`));
+      consola.error(`错误: ${error instanceof Error ? error.message : String(error)}`);
       if (globalOptions.debug) {
         console.error(error);
       }
       process.exit(1);
     }
-  });
+  },
+});
 
 /**
  * 获取本地已安装的模块
@@ -254,18 +268,18 @@ async function applyUpdate(update: UpdateInfo, projectRoot: string, showDiff: bo
     const targetPath = resolve(projectRoot, file.target);
 
     if (fileChange.hasLocalChanges) {
-      logger.warn(`跳过 ${file.target} - 检测到本地修改`);
+      consola.warn(`跳过 ${file.target} - 检测到本地修改`);
 
       if (showDiff) {
         // TODO: 生成并显示 diff
-        logger.info('diff 功能暂未完全实现');
+        consola.info('diff 功能暂未完全实现');
       }
 
       continue;
     }
 
     // 直接覆盖
-    logger.info(`更新 ${file.target}...`);
+    consola.info(`更新 ${file.target}...`);
 
     // TODO: 从远程获取最新内容
     // const remoteContent = await getRemoteFileContent(file.path);
@@ -273,6 +287,6 @@ async function applyUpdate(update: UpdateInfo, projectRoot: string, showDiff: bo
     await mkdir(dirname(targetPath), { recursive: true });
     // await writeFile(targetPath, remoteContent, 'utf-8');
 
-    logger.success(`已更新 ${file.target}`);
+    consola.success(`已更新 ${file.target}`);
   }
 }
