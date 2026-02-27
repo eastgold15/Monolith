@@ -98,7 +98,7 @@ ${module.dependencies?.length ? `${pc.white('依赖:')} ${pc.dim(module.dependen
           });
 
           if (shouldInstall) {
-            const installer = new ModuleInstaller(registryManager, projectRoot, globalOptions.local as boolean);
+            const installer = new ModuleInstaller(registryManager, projectRoot, globalOptions.local as boolean, globalOptions.yes as boolean);
             for (const dep of depCheck.missing) {
               consola.info(`正在安装依赖: ${pc.cyan(dep)}`);
               await installer.install(dep, skipDeps);
@@ -127,7 +127,7 @@ ${module.dependencies?.length ? `${pc.white('依赖:')} ${pc.dim(module.dependen
       }
 
       // 执行安装
-      const installer = new ModuleInstaller(registryManager, projectRoot, globalOptions.local as boolean);
+      const installer = new ModuleInstaller(registryManager, projectRoot, globalOptions.local as boolean, globalOptions.yes as boolean);
       const result = await installer.install(moduleName, skipDeps);
 
       if (result.success) {

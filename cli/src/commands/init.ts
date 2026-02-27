@@ -9,8 +9,96 @@ import prompts from 'prompts';
 import type { AppConfig } from '../types/index.js';
 import { resolve } from 'node:path';
 import { cwd } from 'node:process';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, writeFile, readdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+
+/**
+ * 检测目录类型
+ */
+async function detectDirType(dirPath: string): Promise<'backend' | 'frontend' | 'unknown' | null> {
+  if (!existsSync(dirPath)) {
+    return null;
+  }
+
+  const entries = await readdir(dirPath);
+
+  // 有 src/modules 的是 backend
+  if (entries.includes('src')) {
+    const srcPath = resolve(dirPath, 'src');
+    const srcEntries = await readdir(srcPath).catch(() => []);
+
+    if (srcEntries.includes('modules') || (srcEntries as string[]).includes('routes')) {
+      return 'backend';
+    }
+    if ((srcEntries as string[]).includes('components') || (srcEntries as string[]).includes('pages') || (srcEntries as string[]).includes('app')) {
+      return 'frontend';
+    }
+  }
+
+  // 检查是否有典型的 frontend 文件
+  const hasFrontendFiles = entries.some(e =>
+    e === 'package.json' ||
+    e === 'tsconfig.json' ||
+    e === 'vite.config.ts' ||
+    e === 'next.config.js'
+  );
+
+  if (hasFrontendFiles) {
+    // 读取 package.json 判断
+    const pkgPath = resolve(dirPath, 'package.json');
+    if (existsSync(pkgPath)) {
+      try {
+        const content = await (await import('node:fs/promises')).readFile(pkgPath, 'utf-8');
+        const pkg = JSON.parse(content);
+        const deps = { ...pkg.dependencies, ...pkg.devDependencies };
+
+        if (deps['elysia'] || deps['@elysiajs/jwt'] || deps['drizzle-orm']) {
+          return 'backend';
+        }
+        if (deps['react'] || deps['vue'] || deps['next'] || deps['nuxt'] || deps['vite']) {
+          return 'frontend';
+        }
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  return 'unknown';
+}
+
+/**
+ * 扫描 apps 目录
+ */
+async function scanAppsDir(projectRoot: string): Promise<AppConfig[]> {
+  const appsPath = resolve(projectRoot, 'apps');
+
+  if (!existsSync(appsPath)) {
+    return [];
+  }
+
+  const entries = await readdir(appsPath, { withFileTypes: true });
+  const apps: AppConfig[] = [];
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+
+    const appPath = resolve(appsPath, entry.name);
+    const type = await detectDirType(appPath);
+
+    if (type === 'backend' || type === 'frontend') {
+      apps.push({
+        name: entry.name,
+        type,
+        path: `apps/${entry.name}`,
+      });
+    }
+  }
+
+  return apps;
+}
 
 export default defineCommand({
   meta: {
@@ -40,7 +128,16 @@ export default defineCommand({
         }
       }
 
-      // ========== 第一步：收集基础信息 ==========
+      // ========== 第一步：检测项目结构 ==========
+      consola.start('扫描项目结构...');
+
+      const detectedApps = await scanAppsDir(projectRoot);
+
+      if (detectedApps.length > 0) {
+        consola.success(`检测到 ${detectedApps.length} 个应用`);
+      }
+
+      // ========== 第二步：收集基础信息 ==========
       const baseAnswers = await prompts([
         {
           type: 'select',
@@ -50,7 +147,7 @@ export default defineCommand({
             { title: '单应用 (Single App)', value: 'single-app' },
             { title: 'Monorepo (pnpm/bun workspaces)', value: 'monorepo' },
           ],
-          initial: 0,
+          initial: detectedApps.length > 1 ? 1 : 0,
         },
         {
           type: 'select',
@@ -69,48 +166,105 @@ export default defineCommand({
       let apps: AppConfig[] = [];
 
       if (projectType === 'monorepo') {
-        // ========== 第二步：收集应用信息 ==========
-        const { appCount } = await prompts({
-          type: 'number',
-          name: 'appCount',
-          message: '需要创建几个应用?',
-          initial: 2,
-          min: 1,
-        });
-
-        const appAnswers = await prompts(
-          Array.from({ length: appCount }, (_, i) => ({
-            type: 'select',
-            name: `appType${i}`,
-            message: `应用 ${i + 1} 类型?`,
-            choices: [
-              { title: '后端 (Backend)', value: 'backend' },
-              { title: '前端 (Frontend)', value: 'frontend' },
-            ],
-            initial: i % 2,
-          }))
-        );
-
-        for (let i = 0; i < appCount; i++) {
-          const type = appAnswers[`appType${i}`] as 'backend' | 'frontend';
-          const defaultName = type === 'backend' ? 'api' : 'web';
-
-          // 自动生成唯一的名称
-          let name = defaultName;
-          let count = 1;
-          while (apps.some(a => a.name === name)) {
-            name = `${defaultName}${count}`;
-            count++;
+        // ========== 第三步：确认应用列表 ==========
+        if (detectedApps.length > 0) {
+          // 显示检测到的应用
+          consola.log('');
+          consola.log(pc.cyan('检测到的应用:'));
+          for (const app of detectedApps) {
+            const icon = app.type === 'backend' ? '🔧' : '🎨';
+            consola.log(`  ${icon} ${pc.cyan(app.name)} (${pc.dim(app.type)}) → ${pc.dim(app.path)}`);
           }
 
-          // 自动生成路径
-          const path = `apps/${name}`;
+          const { useDetected } = await prompts({
+            type: 'confirm',
+            name: 'useDetected',
+            message: '使用检测到的应用?',
+            initial: true,
+          });
 
-          apps.push({ name, type, path });
+          if (useDetected) {
+            apps = detectedApps;
+
+            // 允许用户手动调整类型
+            const { shouldAdjust } = await prompts({
+              type: 'confirm',
+              name: 'shouldAdjust',
+              message: '是否需要调整应用类型?',
+              initial: false,
+            });
+
+            if (shouldAdjust) {
+              for (const app of apps) {
+                const { type } = await prompts({
+                  type: 'select',
+                  name: 'type',
+                  message: `${app.name} 类型?`,
+                  choices: [
+                    { title: '🔧 后端 (Backend)', value: 'backend' },
+                    { title: '🎨 前端 (Frontend)', value: 'frontend' },
+                  ],
+                  initial: app.type === 'backend' ? 0 : 1,
+                });
+                app.type = type;
+              }
+            }
+          }
+        }
+
+        // 如果没有检测到应用或用户选择不使用，手动添加
+        if (apps.length === 0) {
+          consola.log('');
+          consola.log(pc.dim('没有检测到应用，请手动添加...'));
+
+          let adding = true;
+          while (adding) {
+            const { name } = await prompts({
+              type: 'text',
+              name: 'name',
+              message: `应用名称 (${apps.length + 1})`,
+              initial: apps.length === 0 ? 'api' : apps.length === 1 ? 'web' : `app${apps.length + 1}`,
+            });
+
+            const { type } = await prompts({
+              type: 'select',
+              name: 'type',
+              message: `${name} 类型?`,
+              choices: [
+                { title: '🔧 后端 (Backend)', value: 'backend' },
+                { title: '🎨 前端 (Frontend)', value: 'frontend' },
+              ],
+              initial: apps.length === 0 ? 0 : 1,
+            });
+
+            apps.push({
+              name,
+              type,
+              path: `apps/${name}`,
+            });
+
+            const { addMore } = await prompts({
+              type: 'confirm',
+              name: 'addMore',
+              message: '继续添加应用?',
+              initial: apps.length < 2,
+            });
+
+            adding = addMore;
+          }
+        }
+
+        // 检查是否有至少一个 backend 和 frontend
+        const hasBackend = apps.some(a => a.type === 'backend');
+        const hasFrontend = apps.some(a => a.type === 'frontend');
+
+        if (!hasBackend && !hasFrontend) {
+          consola.warn('没有有效的应用，请至少添加一个应用');
+          return;
         }
       }
 
-      // ========== 第三步：构建配置 ==========
+      // ========== 第四步：构建配置 ==========
       const config: any = {
         projectType,
         packageManager,
@@ -119,19 +273,9 @@ export default defineCommand({
         createdAt: new Date().toISOString(),
       };
 
-      // 添加默认值
-      if (projectType === 'monorepo' && apps.length > 0) {
-        const defaultBackend = apps.find(a => a.type === 'backend');
-        const defaultFrontend = apps.find(a => a.type === 'frontend');
-        config.defaults = {
-          backend: defaultBackend?.name,
-          frontend: defaultFrontend?.name,
-        };
-      }
-
       await writeFile(configPath, JSON.stringify(config, null, 2));
 
-      // ========== 第四步：创建目录结构 ==========
+      // ========== 第五步：创建目录结构 ==========
       consola.start('创建目录结构...');
 
       if (projectType === 'single-app') {
@@ -146,6 +290,8 @@ export default defineCommand({
         // 创建 monorepo 结构
         for (const app of apps) {
           const appPath = resolve(projectRoot, app.path);
+
+          // 创建 app 目录（如果不存在）
           if (!existsSync(appPath)) {
             await mkdir(appPath, { recursive: true });
           }
@@ -190,7 +336,7 @@ export default defineCommand({
 
       consola.success('项目结构已创建');
 
-      // ========== 第五步：显示配置摘要 ==========
+      // ========== 第六步：显示配置摘要 ==========
       let summaryMessage = `${pc.white('项目类型:')} ${pc.cyan(projectType)}
 ${pc.white('包管理器:')} ${pc.cyan(packageManager)}`;
 

@@ -39,15 +39,18 @@ export class ModuleInstaller {
   private tsProject: Project | null = null;
   private projectConfig: ProjectConfig | null = null;
   private currentWorkingDir: string;
+  private skipPrompts: boolean;
 
   constructor(
     registryManager: RegistryManager,
     projectRoot: string,
-    isLocal: boolean = false
+    isLocal: boolean = false,
+    skipPrompts: boolean = false
   ) {
     this.registryManager = registryManager;
     this.projectRoot = projectRoot;
     this.isLocal = isLocal;
+    this.skipPrompts = skipPrompts;
     this.currentWorkingDir = resolve(cwd());
     // 本地模式：从项目根目录的 templates 读取
     // 远程模式：从 GitHub 下载
@@ -72,26 +75,6 @@ export class ModuleInstaller {
     try {
       const content = await readFile(configPath, 'utf-8');
       this.projectConfig = JSON.parse(content);
-
-      // 向后兼容：转换旧配置格式
-      if (this.projectConfig && !this.projectConfig.apps && (this.projectConfig as any).backendName) {
-        const oldConfig = this.projectConfig as any;
-        this.projectConfig = {
-          ...oldConfig,
-          apps: [
-            { name: oldConfig.backendName, type: 'backend', path: `apps/${oldConfig.backendName}` },
-            { name: oldConfig.frontendName, type: 'frontend', path: `apps/${oldConfig.frontendName}` },
-          ],
-          defaults: {
-            backend: oldConfig.backendName,
-            frontend: oldConfig.frontendName,
-          },
-        };
-        // 移除旧字段
-        delete (this.projectConfig as any).backendName;
-        delete (this.projectConfig as any).frontendName;
-      }
-
       return this.projectConfig;
     } catch {
       return null;
@@ -162,24 +145,31 @@ export class ModuleInstaller {
         continue;
       }
 
-      let selectedApp: AppConfig;
-
-      if (sameTypeApps.length === 1) {
-        // 只有一个，使用默认
-        selectedApp = sameTypeApps[0];
-      } else {
-        // 多个，提示选择
-        const { appName } = await prompts({
-          type: 'select',
-          name: 'appName',
-          message: `${targetType === 'backend' ? '后端' : '前端'} 安装到:`,
-          choices: sameTypeApps.map(app => ({
-            title: app.name,
-            value: app.name,
-          })),
+      // 如果跳过提示，使用第一个匹配的 app
+      if (this.skipPrompts) {
+        targets.push({
+          app: sameTypeApps[0],
+          types: [targetType],
         });
-        selectedApp = sameTypeApps.find(a => a.name === appName)!;
+        continue;
       }
+
+      // 提示用户选择
+      const { appName } = await prompts({
+        type: 'select',
+        name: 'appName',
+        message: `${targetType === 'backend' ? '后端' : '前端'} 安装到:`,
+        choices: sameTypeApps.map(app => ({
+          title: app.name,
+          value: app.name,
+        })),
+      });
+
+      if (!appName) {
+        throw new Error('用户取消选择');
+      }
+
+      const selectedApp = sameTypeApps.find(a => a.name === appName)!;
 
       targets.push({
         app: selectedApp,
@@ -194,12 +184,12 @@ export class ModuleInstaller {
    * 根据目标类型过滤文件
    */
   private filterFilesByTarget(files: ModuleFile[] | Record<'backend' | 'frontend', ModuleFile[]>, targetType: 'backend' | 'frontend'): ModuleFile[] {
-    // 向后兼容：如果 files 是数组，直接返回
+    // 如果 files 是数组，直接返回（适用于单目标模块）
     if (Array.isArray(files)) {
       return files;
     }
 
-    // 新格式：按目标类型过滤
+    // 按目标类型过滤（适用于多目标模块）
     return files[targetType] || [];
   }
 
