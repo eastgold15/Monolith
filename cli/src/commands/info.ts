@@ -17,13 +17,23 @@ export default defineCommand({
   },
   args: {
     module: {
-      type: 'string',
+      type: 'positional',
       description: '模块名称',
       required: true,
     },
+    local: {
+      type: 'boolean',
+      description: '使用本地模块而非远程仓库',
+      default: false,
+    },
+    debug: {
+      type: 'boolean',
+      description: '调试模式',
+      default: false,
+    },
   },
   async run(ctx) {
-    const globalOptions = ctx.parent?.args || {};
+    const globalOptions = ctx.args;
     const moduleName = ctx.args.module as string;
     const projectRoot = resolve(cwd());
 

@@ -18,13 +18,24 @@ export default defineCommand({
   },
   args: {
     module: {
-      type: 'string',
+      type: 'positional',
       description: '模块名称',
       required: true,
     },
+    yes: {
+      type: 'boolean',
+      description: '跳过确认提示',
+      default: false,
+      alias: 'y',
+    },
+    debug: {
+      type: 'boolean',
+      description: '调试模式',
+      default: false,
+    },
   },
   async run(ctx) {
-    const globalOptions = ctx.parent?.args || {};
+    const globalOptions = ctx.args;
     const moduleName = ctx.args.module as string;
     const projectRoot = resolve(cwd());
 

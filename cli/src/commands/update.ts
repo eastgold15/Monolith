@@ -43,9 +43,24 @@ export default defineCommand({
       description: '显示文件差异',
       default: false,
     },
+    local: {
+      type: 'boolean',
+      description: '使用本地模块而非远程仓库',
+      default: false,
+    },
+    debug: {
+      type: 'boolean',
+      description: '调试模式',
+      default: false,
+    },
+    yes: {
+      type: 'boolean',
+      description: '跳过所有确认提示',
+      default: false,
+    },
   },
   async run(ctx) {
-    const globalOptions = ctx.parent?.args || {};
+    const globalOptions = ctx.args;
     const moduleName = ctx.args.module as string | undefined;
     const showDiff = ctx.args.diff as boolean;
     const projectRoot = resolve(cwd());

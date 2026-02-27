@@ -26,9 +26,19 @@ export default defineCommand({
       description: '搜索模块',
       alias: 's',
     },
+    local: {
+      type: 'boolean',
+      description: '使用本地模块而非远程仓库',
+      default: false,
+    },
+    debug: {
+      type: 'boolean',
+      description: '调试模式',
+      default: false,
+    },
   },
   async run(ctx) {
-    const globalOptions = ctx.args || {};
+    const globalOptions = ctx.args;
     const category = ctx.args.category as string | undefined;
     const search = ctx.args.search as string | undefined;
     const projectRoot = resolve(cwd());
