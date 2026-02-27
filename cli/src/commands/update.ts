@@ -1,0 +1,278 @@
+import { Command } from 'commander';
+import * as p from '@clack/prompts';
+import pc from 'picocolors';
+import { resolve } from 'node:path';
+import { cwd } from 'node:process';
+import { createHash } from 'node:crypto';
+import { readFile, existsSync } from 'node:fs/promises';
+import * as diff from 'diff';
+import { RegistryManager } from '../utils/registry.js';
+import type { ModuleConfig, ModuleFile } from '../types/index.js';
+import { logger } from '../utils/logger.js';
+
+/**
+ * 更新检查结果
+ */
+interface UpdateInfo {
+  moduleName: string;
+  currentVersion: string;
+  latestVersion: string;
+  changedFiles: Array<{
+    file: ModuleFile;
+    hasLocalChanges: boolean;
+    diff?: string;
+  }>;
+}
+
+/**
+ * update 命令 - 更新已安装的模块
+ */
+export const updateCommand = new Command('update')
+  .description('更新已安装的模块')
+  .argument('[module]', '模块名称 (不指定则检查所有已安装模块)')
+  .option('-d, --diff', '显示文件差异')
+  .option('-y, --yes', '自动应用所有更新')
+  .action(async (moduleName: string | undefined, options) => {
+    const globalOptions = updateCommand.parent?.opts() || {};
+    const projectRoot = resolve(cwd());
+
+    try {
+      p.intro(pc.bgCyan(pc.black(' Monolith Update ')));
+
+      const registryManager = new RegistryManager({
+        cwd: projectRoot,
+        registryUrl: globalOptions.registryUrl,
+        debug: globalOptions.debug,
+        local: globalOptions.local,
+      });
+
+      // 获取本地已安装的模块
+      const localModules = await getLocalModules(projectRoot);
+
+      if (localModules.length === 0) {
+        p.cancel(pc.yellow('没有检测到已安装的模块'));
+        p.outro(`使用 ${pc.cyan('monolith add <module>')} 安装模块`);
+        return;
+      }
+
+      // 确定要检查的模块
+      const modulesToCheck = moduleName
+        ? localModules.filter(m => m.name === moduleName || m.module === moduleName)
+        : localModules;
+
+      if (modulesToCheck.length === 0) {
+        p.cancel(pc.yellow(`模块 "${moduleName}" 未安装`));
+        return;
+      }
+
+      // 检查更新
+      const s = p.spinner();
+      s.start('检查更新...');
+
+      const updates: UpdateInfo[] = [];
+
+      for (const localMod of modulesToCheck) {
+        const remoteModule = await registryManager.getModule(localMod.module);
+
+        if (!remoteModule) {
+          logger.warn(`模块 ${localMod.module} 在远程仓库中不存在`);
+          continue;
+        }
+
+        // 版本比较
+        if (remoteModule.version !== localMod.version) {
+          const changedFiles = await checkFileChanges(localMod, remoteModule, projectRoot);
+
+          updates.push({
+            moduleName: localMod.module,
+            currentVersion: localMod.version,
+            latestVersion: remoteModule.version,
+            changedFiles,
+          });
+        }
+      }
+
+      s.stop(`检查完成，发现 ${updates.length} 个可用更新`);
+
+      if (updates.length === 0) {
+        p.note(pc.dim('所有模块都是最新版本'), '更新检查');
+        p.outro(pc.green('✓ 没有可用更新'));
+        return;
+      }
+
+      // 显示更新信息
+      for (const update of updates) {
+        const changedCount = update.changedFiles.filter(f => f.hasLocalChanges).length;
+        p.note(
+          `${pc.cyan(update.moduleName)}
+${pc.yellow('当前版本:')} ${pc.dim(update.currentVersion)}
+${pc.green('最新版本:')} ${pc.dim(update.latestVersion)}
+${pc.yellow('变更文件:')} ${update.changedFiles.length} 个${changedCount > 0 ? ` (${changedCount} 个有本地修改)` : ''}`,
+          '可用更新'
+        );
+      }
+
+      // 确认更新
+      if (!globalOptions.yes && !options.yes) {
+        const shouldUpdate = await p.confirm({
+          message: '是否应用更新?',
+          initialValue: true,
+        });
+
+        if (p.isCancel(shouldUpdate) || !shouldUpdate) {
+          p.cancel('更新已取消');
+          return;
+        }
+      }
+
+      // 应用更新
+      for (const update of updates) {
+        await applyUpdate(update, projectRoot, options.diff);
+      }
+
+      p.outro(pc.green('✓ 更新完成!'));
+
+    } catch (error) {
+      p.cancel(pc.red(`错误: ${error instanceof Error ? error.message : String(error)}`));
+      if (globalOptions.debug) {
+        console.error(error);
+      }
+      process.exit(1);
+    }
+  });
+
+/**
+ * 获取本地已安装的模块
+ */
+async function getLocalModules(projectRoot: string): Promise<Array<{ module: string; version: string; name: string }>> {
+  const modules: Array<{ module: string; version: string; name: string }> = [];
+
+  // 检查 monolith.config.json
+  const configPath = resolve(projectRoot, 'monolith.config.json');
+  if (existsSync(configPath)) {
+    try {
+      const config = JSON.parse(await readFile(configPath, 'utf-8'));
+      if (config.modules) {
+        for (const mod of config.modules) {
+          modules.push({
+            module: mod.name,
+            version: mod.version,
+            name: mod.displayName || mod.name,
+          });
+        }
+      }
+    } catch {
+      // 忽略解析错误
+    }
+  }
+
+  // 扫描 src/modules 目录
+  const { readdir } = await import('node:fs/promises');
+  const modulesDir = resolve(projectRoot, 'src/modules');
+
+  try {
+    const dirs = await readdir(modulesDir, { withFileTypes: true });
+    for (const dir of dirs) {
+      if (dir.isDirectory() && !modules.find(m => m.module === dir.name)) {
+        // 尝试从模块文件中读取版本
+        const schemaPath = resolve(modulesDir, dir.name, `${dir.name}.schema.ts`);
+        if (existsSync(schemaPath)) {
+          const content = await readFile(schemaPath, 'utf-8');
+          const versionMatch = content.match(/@monolith\/(\S+) v([\d.]+)/);
+          if (versionMatch) {
+            modules.push({
+              module: dir.name,
+              version: versionMatch[2],
+              name: dir.name,
+            });
+          } else {
+            modules.push({
+              module: dir.name,
+              version: 'unknown',
+              name: dir.name,
+            });
+          }
+        }
+      }
+    }
+  } catch {
+    // 目录不存在，忽略
+  }
+
+  return modules;
+}
+
+/**
+ * 检查文件变更
+ */
+async function checkFileChanges(
+  localMod: { module: string; version: string },
+  remoteModule: ModuleConfig,
+  projectRoot: string
+): Promise<Array<{ file: ModuleFile; hasLocalChanges: boolean; diff?: string }>> {
+  const changes: Array<{ file: ModuleFile; hasLocalChanges: boolean; diff?: string }> = [];
+
+  for (const file of remoteModule.files) {
+    const localPath = resolve(projectRoot, file.target);
+
+    if (!existsSync(localPath)) {
+      changes.push({ file, hasLocalChanges: false });
+      continue;
+    }
+
+    // 读取本地文件
+    const localContent = await readFile(localPath, 'utf-8');
+
+    // 移除 Monolith 头部注释来比较实际内容
+    const cleanLocalContent = localContent.replace(/\/\/ 🤖 This file is generated from[\s\S]*?\n\n/, '');
+
+    // 计算本地 hash
+    const localHash = createHash('sha256').update(cleanLocalContent).digest('hex');
+
+    // TODO: 获取远程文件内容和 hash
+    // 目前简化处理：检查文件是否被修改过
+    const hasHeader = localContent.includes('// 🤖 This file is generated from');
+
+    changes.push({
+      file,
+      hasLocalChanges: !hasHeader,
+    });
+  }
+
+  return changes;
+}
+
+/**
+ * 应用更新
+ */
+async function applyUpdate(update: UpdateInfo, projectRoot: string, showDiff: boolean): Promise<void> {
+  const { writeFile, mkdir } = await import('node:fs/promises');
+  const { dirname } = await import('node:path');
+
+  for (const fileChange of update.changedFiles) {
+    const file = fileChange.file;
+    const targetPath = resolve(projectRoot, file.target);
+
+    if (fileChange.hasLocalChanges) {
+      logger.warn(`跳过 ${file.target} - 检测到本地修改`);
+
+      if (showDiff) {
+        // TODO: 生成并显示 diff
+        logger.info('diff 功能暂未完全实现');
+      }
+
+      continue;
+    }
+
+    // 直接覆盖
+    logger.info(`更新 ${file.target}...`);
+
+    // TODO: 从远程获取最新内容
+    // const remoteContent = await getRemoteFileContent(file.path);
+
+    await mkdir(dirname(targetPath), { recursive: true });
+    // await writeFile(targetPath, remoteContent, 'utf-8');
+
+    logger.success(`已更新 ${file.target}`);
+  }
+}

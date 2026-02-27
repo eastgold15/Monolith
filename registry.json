@@ -1,0 +1,196 @@
+{
+  "$schema": "./registry.schema.json",
+  "version": "1.0.0",
+  "registryUrl": "https://raw.githubusercontent.com/your-org/Monolith/main/registry.json",
+  "modules": {
+    "auth": {
+      "name": "Authentication",
+      "description": "完整的认证系统，包含登录、注册、JWT、密码重置等功能",
+      "version": "1.0.0",
+      "author": "Monolith Team",
+      "tags": ["auth", "jwt", "security"],
+      "category": "core",
+      "dependencies": [
+        { "name": "@elysiajs/jwt", "version": "^1.1.0" },
+        { "name": "@elysiajs/cookie", "version": "^1.1.0" },
+        { "name": "bcrypt", "version": "^5.1.1" },
+        { "name": "zod", "version": "^3.23.0" }
+      ],
+      "devDependencies": [],
+      "envVariables": [
+        {
+          "name": "JWT_SECRET",
+          "description": "JWT 签名密钥，建议使用随机字符串",
+          "default": "your-super-secret-jwt-key-change-this-in-production",
+          "required": true
+        },
+        {
+          "name": "JWT_EXPIRES_IN",
+          "description": "JWT 过期时间",
+          "default": "7d",
+          "required": false
+        }
+      ],
+      "files": [
+        {
+          "path": "templates/auth/auth.schema.ts",
+          "target": "src/modules/auth/auth.schema.ts",
+          "type": "schema"
+        },
+        {
+          "path": "templates/auth/auth.model.ts",
+          "target": "src/modules/auth/auth.model.ts",
+          "type": "model"
+        },
+        {
+          "path": "templates/auth/auth.service.ts",
+          "target": "src/modules/auth/auth.service.ts",
+          "type": "service"
+        },
+        {
+          "path": "templates/auth/auth.ts",
+          "target": "src/modules/auth/auth.ts",
+          "type": "controller",
+          "autoRegister": {
+            "type": "plugin",
+            "injectIn": "src/index.ts",
+            "importAs": "authPlugin",
+            "marker": "// <monolith-plugins>"
+          }
+        },
+        {
+          "path": "templates/auth/routes.ts",
+          "target": "src/modules/auth/routes.ts",
+          "type": "routes",
+          "autoRegister": {
+            "type": "routes",
+            "injectIn": "src/index.ts",
+            "importAs": "authRoutes",
+            "marker": "// <monolith-routes>"
+          }
+        }
+      ],
+      "hooks": {
+        "afterInstall": [
+          {
+            "type": "log",
+            "message": "✅ Auth 模块安装完成！"
+          },
+          {
+            "type": "log",
+            "message": "📝 请在 .env 文件中配置以下环境变量："
+          },
+          {
+            "type": "env",
+            "variables": ["JWT_SECRET", "JWT_EXPIRES_IN"]
+          },
+          {
+            "type": "log",
+            "message": "🔧 接下来可以运行: bun run db:push 同步数据库表结构"
+          }
+        ]
+      }
+    },
+    "rbac": {
+      "name": "Role-Based Access Control",
+      "description": "基于角色的访问控制系统，支持角色、权限、资源管理",
+      "version": "1.0.0",
+      "author": "Monolith Team",
+      "tags": ["rbac", "permission", "security"],
+      "category": "security",
+      "dependencies": [
+        { "name": "zod", "version": "^3.23.0" }
+      ],
+      "devDependencies": [],
+      "requires": ["auth"],
+      "envVariables": [],
+      "files": [
+        {
+          "path": "templates/rbac/rbac.schema.ts",
+          "target": "src/modules/rbac/rbac.schema.ts",
+          "type": "schema"
+        },
+        {
+          "path": "templates/rbac/rbac.model.ts",
+          "target": "src/modules/rbac/rbac.model.ts",
+          "type": "model"
+        },
+        {
+          "path": "templates/rbac/rbac.service.ts",
+          "target": "src/modules/rbac/rbac.service.ts",
+          "type": "service"
+        },
+        {
+          "path": "templates/rbac/rbac.ts",
+          "target": "src/modules/rbac/rbac.ts",
+          "type": "controller",
+          "autoRegister": {
+            "type": "plugin",
+            "injectIn": "src/index.ts",
+            "importAs": "rbacPlugin",
+            "marker": "// <monolith-plugins>"
+          }
+        }
+      ],
+      "hooks": {
+        "afterInstall": [
+          {
+            "type": "log",
+            "message": "✅ RBAC 模块安装完成！"
+          }
+        ]
+      }
+    },
+    "user": {
+      "name": "User Management",
+      "description": "用户管理模块，包含用户信息、个人资料、头像上传等功能",
+      "version": "1.0.0",
+      "author": "Monolith Team",
+      "tags": ["user", "profile", "management"],
+      "category": "core",
+      "dependencies": [
+        { "name": "zod", "version": "^3.23.0" },
+        { "name": "@elysiajs/cuid", "version": "^1.1.0" }
+      ],
+      "devDependencies": [],
+      "requires": ["auth"],
+      "envVariables": [],
+      "files": [
+        {
+          "path": "templates/user/user.schema.ts",
+          "target": "src/modules/user/user.schema.ts",
+          "type": "schema"
+        },
+        {
+          "path": "templates/user/user.model.ts",
+          "target": "src/modules/user/user.model.ts",
+          "type": "model"
+        },
+        {
+          "path": "templates/user/user.service.ts",
+          "target": "src/modules/user/user.service.ts",
+          "type": "service"
+        },
+        {
+          "path": "templates/user/user.ts",
+          "target": "src/modules/user/user.ts",
+          "type": "controller",
+          "autoRegister": {
+            "type": "plugin",
+            "injectIn": "src/index.ts",
+            "importAs": "userPlugin",
+            "marker": "// <monolith-plugins>"
+          }
+        }
+      ],
+      "hooks": {
+        "afterInstall": [
+          {
+            "type": "log",
+            "message": "✅ User 模块安装完成！"
+          }
+        ]
+      }
+    }
+  }
+}

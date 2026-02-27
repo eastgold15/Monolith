@@ -1,0 +1,146 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Monolith Module Registry Schema",
+  "type": "object",
+  "required": ["version", "modules"],
+  "properties": {
+    "version": {
+      "type": "string",
+      "description": "Registry 版本号"
+    },
+    "registryUrl": {
+      "type": "string",
+      "description": "Registry JSON 的远程 URL"
+    },
+    "modules": {
+      "type": "object",
+      "description": "所有模块的配置",
+      "additionalProperties": {
+        "$ref": "#/definitions/module"
+      }
+    }
+  },
+  "definitions": {
+    "module": {
+      "type": "object",
+      "required": ["name", "description", "version", "files"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "模块显示名称"
+        },
+        "description": {
+          "type": "string",
+          "description": "模块描述"
+        },
+        "version": {
+          "type": "string",
+          "description": "模块版本号"
+        },
+        "author": {
+          "type": "string",
+          "description": "作者"
+        },
+        "tags": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "模块标签"
+        },
+        "category": {
+          "type": "string",
+          "enum": ["core", "security", "database", "api", "ui", "utility"],
+          "description": "模块分类"
+        },
+        "dependencies": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "version": { "type": "string" }
+            }
+          },
+          "description": "生产依赖"
+        },
+        "devDependencies": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "version": { "type": "string" }
+            }
+          },
+          "description": "开发依赖"
+        },
+        "requires": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "依赖的其他模块"
+        },
+        "envVariables": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "description": { "type": "string" },
+              "default": { "type": "string" },
+              "required": { "type": "boolean" }
+            }
+          },
+          "description": "需要的环境变量"
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": { "type": "string" },
+              "target": { "type": "string" },
+              "type": {
+                "type": "string",
+                "enum": ["schema", "model", "service", "controller", "routes", "component", "config"]
+              },
+              "autoRegister": {
+                "type": "object",
+                "properties": {
+                  "type": { "type": "string" },
+                  "injectIn": { "type": "string" },
+                  "importAs": { "type": "string" },
+                  "marker": { "type": "string" }
+                }
+              }
+            }
+          },
+          "description": "模块包含的文件列表"
+        },
+        "hooks": {
+          "type": "object",
+          "properties": {
+            "beforeInstall": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "type": { "type": "string" },
+                  "message": { "type": "string" }
+                }
+              }
+            },
+            "afterInstall": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "type": { "type": "string" },
+                  "message": { "type": "string" }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
