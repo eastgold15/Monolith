@@ -6,6 +6,7 @@ import { defineCommand } from 'citty';
 import { consola } from 'consola';
 import pc from 'picocolors';
 import prompts from 'prompts';
+import type { AppConfig } from '../types/index.js';
 import { resolve } from 'node:path';
 import { cwd } from 'node:process';
 import { mkdir, writeFile } from 'node:fs/promises';
@@ -38,7 +39,8 @@ export default defineCommand({
           return;
         }
       }
-      // ========== 第一步：收集基础必选信息 ==========
+
+      // ========== 第一步：收集基础信息 ==========
       const baseAnswers = await prompts([
         {
           type: 'select',
@@ -62,58 +64,78 @@ export default defineCommand({
         },
       ]);
 
-      // 解构基础信息
       const { projectType, packageManager } = baseAnswers;
 
-      // ========== 第二步：根据项目类型条件收集信息 ==========
-      let backendName = '';
-      let frontendName = '';
+      let apps: AppConfig[] = [];
 
-      // 只有 monorepo 类型才询问前后端名称
       if (projectType === 'monorepo') {
-        const repoAnswers = await prompts([
-          {
-            type: 'text',
-            name: 'backendName',
-            message: '默认的后端应用名称',
-            initial: 'api',
-            validate: (value) => value.trim() ? true : '应用名称不能为空', // 加个简单校验
-          },
-          {
-            type: 'text',
-            name: 'frontendName',
-            message: '请输入前端应用名称',
-            initial: 'web',
-            validate: (value) => value.trim() ? true : '应用名称不能为空',
-          },
-        ]);
-        backendName = repoAnswers.backendName;
-        frontendName = repoAnswers.frontendName;
+        // ========== 第二步：收集应用信息 ==========
+        const { appCount } = await prompts({
+          type: 'number',
+          name: 'appCount',
+          message: '需要创建几个应用?',
+          initial: 2,
+          min: 1,
+        });
+
+        const appAnswers = await prompts(
+          Array.from({ length: appCount }, (_, i) => ({
+            type: 'select',
+            name: `appType${i}`,
+            message: `应用 ${i + 1} 类型?`,
+            choices: [
+              { title: '后端 (Backend)', value: 'backend' },
+              { title: '前端 (Frontend)', value: 'frontend' },
+            ],
+            initial: i % 2,
+          }))
+        );
+
+        for (let i = 0; i < appCount; i++) {
+          const type = appAnswers[`appType${i}`] as 'backend' | 'frontend';
+          const defaultName = type === 'backend' ? 'api' : 'web';
+
+          // 自动生成唯一的名称
+          let name = defaultName;
+          let count = 1;
+          while (apps.some(a => a.name === name)) {
+            name = `${defaultName}${count}`;
+            count++;
+          }
+
+          // 自动生成路径
+          const path = `apps/${name}`;
+
+          apps.push({ name, type, path });
+        }
       }
 
-      // ========== 第三步：构建最终配置 ==========
-      // 统一配置结构，single-app 时前后端名称置空或给默认值
-      const config = {
+      // ========== 第三步：构建配置 ==========
+      const config: any = {
         projectType,
         packageManager,
-        // single-app 时前后端名称为空，也可以根据需求设为 undefined
-        backendName: projectType === 'monorepo' ? backendName : '',
-        frontendName: projectType === 'monorepo' ? frontendName : '',
+        apps,
         modules: [],
         createdAt: new Date().toISOString(),
       };
 
+      // 添加默认值
+      if (projectType === 'monorepo' && apps.length > 0) {
+        const defaultBackend = apps.find(a => a.type === 'backend');
+        const defaultFrontend = apps.find(a => a.type === 'frontend');
+        config.defaults = {
+          backend: defaultBackend?.name,
+          frontend: defaultFrontend?.name,
+        };
+      }
+
       await writeFile(configPath, JSON.stringify(config, null, 2));
 
-      // 创建目录结构
+      // ========== 第四步：创建目录结构 ==========
       consola.start('创建目录结构...');
 
       if (projectType === 'single-app') {
-        // 单应用结构
-        const dirs = [
-          'src/modules',
-          'src/plugins',
-        ];
+        const dirs = ['src/modules', 'src/plugins'];
         for (const dir of dirs) {
           const path = resolve(projectRoot, dir);
           if (!existsSync(path)) {
@@ -121,28 +143,42 @@ export default defineCommand({
           }
         }
       } else {
-        // Monorepo 结构
-        // @ = 根目录
-        // packages/contract/ - 契约层（共享类型定义）
-        // apps/api/ - 后端
-        // apps/web/ - 前端
-        const dirs = [
-          `packages/contract/src`,
-          `apps/${backendName}/src/modules`,
-          `apps/${backendName}/src/plugins`,
-          `apps/${frontendName}/src/components`,
-        ];
-        for (const dir of dirs) {
-          const path = resolve(projectRoot, dir);
-          if (!existsSync(path)) {
-            await mkdir(path, { recursive: true });
+        // 创建 monorepo 结构
+        for (const app of apps) {
+          const appPath = resolve(projectRoot, app.path);
+          if (!existsSync(appPath)) {
+            await mkdir(appPath, { recursive: true });
+          }
+
+          if (app.type === 'backend') {
+            const dirs = ['src/modules', 'src/plugins'];
+            for (const dir of dirs) {
+              const path = resolve(appPath, dir);
+              if (!existsSync(path)) {
+                await mkdir(path, { recursive: true });
+              }
+            }
+          } else {
+            const dirs = ['src/components'];
+            for (const dir of dirs) {
+              const path = resolve(appPath, dir);
+              if (!existsSync(path)) {
+                await mkdir(path, { recursive: true });
+              }
+            }
           }
         }
 
+        // 创建 packages/contract 目录
+        const contractPath = resolve(projectRoot, 'packages/contract/src');
+        if (!existsSync(contractPath)) {
+          await mkdir(contractPath, { recursive: true });
+        }
+
         // 创建 workspace 配置
-        const workspacePath = resolve(projectRoot, packageManager === 'pnpm' ? 'pnpm-workspace.yaml' : 'bun.lockb');
-        if (!existsSync(workspacePath)) {
-          if (packageManager === 'pnpm') {
+        if (packageManager === 'pnpm') {
+          const workspacePath = resolve(projectRoot, 'pnpm-workspace.yaml');
+          if (!existsSync(workspacePath)) {
             const workspaceConfig = `packages:
   - 'packages/*'
   - 'apps/*'
@@ -152,30 +188,29 @@ export default defineCommand({
         }
       }
 
-
-
       consola.success('项目结构已创建');
 
-      // 显示配置摘要
+      // ========== 第五步：显示配置摘要 ==========
       let summaryMessage = `${pc.white('项目类型:')} ${pc.cyan(projectType)}
 ${pc.white('包管理器:')} ${pc.cyan(packageManager)}`;
 
-      if (projectType === 'monorepo') {
+      if (projectType === 'monorepo' && apps.length > 0) {
+        summaryMessage += `\n\n${pc.white('应用列表:')}`;
+        for (const app of apps) {
+          const icon = app.type === 'backend' ? '🔧' : '🎨';
+          summaryMessage += `\n  ${icon} ${pc.cyan(app.name)} (${pc.dim(app.type)}) → ${pc.dim(app.path)}`;
+        }
+
         summaryMessage += `
-${pc.white('后端应用:')} ${pc.cyan(`apps/${backendName}/`)}
-${pc.white('前端应用:')} ${pc.cyan(`apps/${frontendName}/`)}
-${pc.white('契约层:')} ${pc.cyan('packages/contract/')}
 
 ${pc.dim('项目结构:')}
 ${pc.dim('├── packages/')}
 ${pc.dim('│   └── contract/     # 共享类型定义')}
-${pc.dim('├── apps/')}
-${pc.dim('│   ├── api/         # 后端 (modules/ 放 controller + service)')}
-${pc.dim('│   └── web/         # 前端 (components/ 放组件)')}`;
-      } else {
-        summaryMessage += `
-${pc.dim('项目结构:')}
-${pc.dim('└── src/modules/    # 模块目录')}`;
+${pc.dim('├── apps/')}`;
+        for (const app of apps) {
+          const icon = app.type === 'backend' ? '🔧' : '🎨';
+          summaryMessage += `\n${pc.dim('│   ├── ')}${icon} ${pc.cyan(app.name)}`;
+        }
       }
 
       consola.box({
@@ -186,8 +221,15 @@ ${pc.dim('└── src/modules/    # 模块目录')}`;
       consola.success('初始化完成!');
       console.log();
       consola.log(`${pc.dim('接下来可以:')}`);
-      consola.log(`  ${pc.cyan('monolith list')}     - 查看可用模块`);
-      consola.log(`  ${pc.cyan('monolith add auth')} - 安装认证模块`);
+      if (apps.length > 0) {
+        const backendApps = apps.filter(a => a.type === 'backend');
+        if (backendApps.length > 0) {
+          consola.log(`  ${pc.cyan(`cd ${backendApps[0].path} && monolith add auth`)} - 安装认证模块`);
+        }
+      } else {
+        consola.log(`  ${pc.cyan('monolith list')}     - 查看可用模块`);
+        consola.log(`  ${pc.cyan('monolith add auth')} - 安装认证模块`);
+      }
 
     } catch (error) {
       consola.error(`错误: ${error instanceof Error ? error.message : String(error)}`);

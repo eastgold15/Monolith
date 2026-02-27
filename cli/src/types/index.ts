@@ -1,4 +1,44 @@
 /**
+ * 应用配置
+ */
+export interface AppConfig {
+  /** 应用名称 */
+  name: string;
+  /** 应用类型 */
+  type: 'backend' | 'frontend';
+  /** 应用相对路径 */
+  path: string;
+}
+
+/**
+ * 项目配置
+ */
+export interface ProjectConfig {
+  /** 项目类型 */
+  projectType: 'single-app' | 'monorepo';
+  /** 包管理器 */
+  packageManager: string;
+  /** 应用列表 */
+  apps: AppConfig[];
+  /** 默认目标 */
+  defaults?: {
+    /** 默认 backend 应用 */
+    backend?: string;
+    /** 默认 frontend 应用 */
+    frontend?: string;
+  };
+  /** 已安装的模块 */
+  modules: Array<{
+    name: string;
+    version: string;
+    displayName?: string;
+    installedAt?: string;
+  }>;
+  /** 创建时间 */
+  createdAt: string;
+}
+
+/**
  * 模块文件配置
  */
 export interface ModuleFile {
@@ -8,6 +48,8 @@ export interface ModuleFile {
   target: string;
   /** 文件类型 */
   type: 'schema' | 'model' | 'service' | 'controller' | 'routes' | 'component' | 'config';
+  /** 目标类型（backend/frontend，用于多 app 项目） */
+  targetType?: 'backend' | 'frontend';
   /** 自动注册配置 */
   autoRegister?: {
     /** 注册类型：plugin 或 routes */
@@ -75,6 +117,8 @@ export interface ModuleConfig {
   tags?: string[];
   /** 分类 */
   category?: 'core' | 'security' | 'database' | 'api' | 'ui' | 'utility';
+  /** 模块包含的目标类型（backend/frontend/both） */
+  targets?: ('backend' | 'frontend')[];
   /** 生产依赖 */
   dependencies?: Dependency[];
   /** 开发依赖 */
@@ -83,8 +127,8 @@ export interface ModuleConfig {
   requires?: string[];
   /** 环境变量 */
   envVariables?: EnvVariable[];
-  /** 包含的文件 */
-  files: ModuleFile[];
+  /** 包含的文件（向后兼容，单数组形式） */
+  files: ModuleFile[] | Record<'backend' | 'frontend', ModuleFile[]>;
   /** 安装钩子 */
   hooks?: {
     beforeInstall?: HookAction[];

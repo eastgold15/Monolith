@@ -1,4 +1,4 @@
-import type { ModuleConfig, ModuleFile, Dependency, EnvVariable } from '../types/index.js';
+import type { ModuleConfig, ModuleFile, Dependency, EnvVariable, AppConfig, ProjectConfig } from '../types/index.js';
 import type { RegistryManager } from './registry.js';
 import { logger } from './logger.js';
 import { resolve, join, dirname, relative } from 'node:path';
@@ -6,6 +6,8 @@ import { mkdir, writeFile, readFile } from 'node:fs/promises';
 import { execSync } from 'node:child_process';
 import { Project, SyntaxKind, SourceFile } from 'ts-morph';
 import { existsSync } from 'node:fs';
+import prompts from 'prompts';
+import { cwd } from 'node:process';
 
 /**
  * 文件操作结果
@@ -17,6 +19,16 @@ interface FileOperationResult {
 }
 
 /**
+ * 安装目标
+ */
+interface InstallTarget {
+  /** app 配置 */
+  app: AppConfig;
+  /** 要安装的目标类型（backend/frontend） */
+  types: ('backend' | 'frontend')[];
+}
+
+/**
  * 安装器类
  */
 export class ModuleInstaller {
@@ -25,6 +37,8 @@ export class ModuleInstaller {
   private isLocal: boolean;
   private templateRoot: string;
   private tsProject: Project | null = null;
+  private projectConfig: ProjectConfig | null = null;
+  private currentWorkingDir: string;
 
   constructor(
     registryManager: RegistryManager,
@@ -34,11 +48,169 @@ export class ModuleInstaller {
     this.registryManager = registryManager;
     this.projectRoot = projectRoot;
     this.isLocal = isLocal;
+    this.currentWorkingDir = resolve(cwd());
     // 本地模式：从项目根目录的 templates 读取
-    // 远程模式：从 GitHub 下载（后续实现）
+    // 远程模式：从 GitHub 下载
     this.templateRoot = isLocal
       ? resolve(projectRoot, 'templates')
       : resolve(projectRoot, '.monolith-cache');
+  }
+
+  /**
+   * 获取项目配置
+   */
+  private async getProjectConfig(): Promise<ProjectConfig | null> {
+    if (this.projectConfig) {
+      return this.projectConfig;
+    }
+
+    const configPath = resolve(this.projectRoot, 'monolith.config.json');
+    if (!existsSync(configPath)) {
+      return null;
+    }
+
+    try {
+      const content = await readFile(configPath, 'utf-8');
+      this.projectConfig = JSON.parse(content);
+
+      // 向后兼容：转换旧配置格式
+      if (this.projectConfig && !this.projectConfig.apps && (this.projectConfig as any).backendName) {
+        const oldConfig = this.projectConfig as any;
+        this.projectConfig = {
+          ...oldConfig,
+          apps: [
+            { name: oldConfig.backendName, type: 'backend', path: `apps/${oldConfig.backendName}` },
+            { name: oldConfig.frontendName, type: 'frontend', path: `apps/${oldConfig.frontendName}` },
+          ],
+          defaults: {
+            backend: oldConfig.backendName,
+            frontend: oldConfig.frontendName,
+          },
+        };
+        // 移除旧字段
+        delete (this.projectConfig as any).backendName;
+        delete (this.projectConfig as any).frontendName;
+      }
+
+      return this.projectConfig;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * 检测当前所在的应用
+   */
+  private detectCurrentApp(): AppConfig | null {
+    const config = this.projectConfig;
+    if (!config || !config.apps) {
+      return null;
+    }
+
+    // 获取相对路径
+    const relativePath = relative(this.projectRoot, this.currentWorkingDir);
+
+    // 检查是否在某个 app 目录内
+    for (const app of config.apps) {
+      if (relativePath.startsWith(app.path) || relativePath === app.path) {
+        return app;
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * 选择安装目标（交互式）
+   */
+  private async selectInstallTargets(module: ModuleConfig): Promise<InstallTarget[]> {
+    const config = await this.getProjectConfig();
+    if (!config || !config.apps || config.apps.length === 0) {
+      // 单应用模式，默认安装到当前目录
+      return [{
+        app: {
+          name: '',
+          type: 'backend',
+          path: '',
+        },
+        types: ['backend', 'frontend'],
+      }];
+    }
+
+    // 检测是否在某个 app 目录内
+    const currentApp = this.detectCurrentApp();
+    if (currentApp) {
+      // 在 app 目录内，自动安装到当前 app
+      const moduleTargets = module.targets || ['backend', 'frontend'];
+      const validTypes = moduleTargets.filter(t => t === currentApp.type);
+      return [{
+        app: currentApp,
+        types: validTypes.length > 0 ? validTypes : [currentApp.type],
+      }];
+    }
+
+    // 在根目录，需要选择目标
+    const targets: InstallTarget[] = [];
+
+    // 获取模块的目标类型
+    const moduleTargets = module.targets || ['backend', 'frontend'];
+
+    for (const targetType of moduleTargets) {
+      const sameTypeApps = config.apps.filter(a => a.type === targetType);
+
+      if (sameTypeApps.length === 0) {
+        continue;
+      }
+
+      let selectedApp: AppConfig;
+
+      if (sameTypeApps.length === 1) {
+        // 只有一个，使用默认
+        selectedApp = sameTypeApps[0];
+      } else {
+        // 多个，提示选择
+        const { appName } = await prompts({
+          type: 'select',
+          name: 'appName',
+          message: `${targetType === 'backend' ? '后端' : '前端'} 安装到:`,
+          choices: sameTypeApps.map(app => ({
+            title: app.name,
+            value: app.name,
+          })),
+        });
+        selectedApp = sameTypeApps.find(a => a.name === appName)!;
+      }
+
+      targets.push({
+        app: selectedApp,
+        types: [targetType],
+      });
+    }
+
+    return targets;
+  }
+
+  /**
+   * 根据目标类型过滤文件
+   */
+  private filterFilesByTarget(files: ModuleFile[] | Record<'backend' | 'frontend', ModuleFile[]>, targetType: 'backend' | 'frontend'): ModuleFile[] {
+    // 向后兼容：如果 files 是数组，直接返回
+    if (Array.isArray(files)) {
+      return files;
+    }
+
+    // 新格式：按目标类型过滤
+    return files[targetType] || [];
+  }
+
+  /**
+   * 获取安装路径
+   */
+  private getInstallPath(app: AppConfig): string {
+    if (app.path) {
+      return resolve(this.projectRoot, app.path);
+    }
+    return this.projectRoot;
   }
 
   /**
@@ -58,7 +230,10 @@ export class ModuleInstaller {
     const autoRegistrations: ModuleFile[] = [];
 
     try {
-      // 1. 获取模块配置
+      // 1. 获取项目配置
+      await this.getProjectConfig();
+
+      // 2. 获取模块配置
       const module = await this.registryManager.getModule(moduleName);
       if (!module) {
         throw new Error(`模块 "${moduleName}" 不存在`);
@@ -72,7 +247,17 @@ export class ModuleInstaller {
         '分类': module.category || '-',
       });
 
-      // 2. 检查依赖模块
+      // 显示模块包含的目标类型
+      if (module.targets && module.targets.length > 0) {
+        logger.info(`模块包含: ${module.targets.join(', ')}`);
+      }
+
+      // 3. 选择安装目标
+      const installTargets = await this.selectInstallTargets(module);
+
+      logger.info(`将安装到: ${installTargets.map(t => `${t.app.name}(${t.types.join(', ')})`).join(', ')}`);
+
+      // 4. 检查依赖模块
       if (module.requires && module.requires.length > 0) {
         logger.info('\n检查依赖模块...');
         const depCheck = await this.registryManager.checkDependencies(moduleName);
@@ -89,51 +274,63 @@ export class ModuleInstaller {
         logger.success(`依赖检查通过: ${depCheck.satisfied.join(', ')}`);
       }
 
-      // 3. 处理文件
+      // 5. 处理文件 - 为每个目标安装对应文件
       logger.info('\n开始安装文件...');
-      const totalSteps = module.files.length;
 
-      for (let i = 0; i < module.files.length; i++) {
-        const fileConfig = module.files[i];
-        logger.step(i + 1, totalSteps, fileConfig.target);
+      for (const target of installTargets) {
+        const installPath = this.getInstallPath(target.app);
+        const filteredFiles = this.filterFilesByTarget(module.files, target.types[0]);
 
-        const result = await this.installFile(fileConfig, module);
-        results.push(result);
+        logger.info(`\n安装到 ${target.app.name} (${target.types[0]}):`);
+        for (let i = 0; i < filteredFiles.length; i++) {
+          const fileConfig = filteredFiles[i];
+          logger.step(i + 1, filteredFiles.length, fileConfig.target);
 
-        if (result.action === 'created') {
-          logger.success(`已创建: ${result.path}`);
-        } else if (result.action === 'skipped') {
-          logger.warn(`已跳过: ${result.path} (文件已存在)`);
-        } else if (result.action === 'error') {
-          logger.error(`错误: ${result.error}`);
-          errors.push(result.error || '');
-        }
+          const result = await this.installFile(fileConfig, installPath, module);
+          results.push(result);
 
-        // 收集需要自动注册的文件
-        if (fileConfig.autoRegister) {
-          autoRegistrations.push(fileConfig);
+          if (result.action === 'created') {
+            logger.success(`已创建: ${result.path}`);
+          } else if (result.action === 'skipped') {
+            logger.warn(`已跳过: ${result.path} (文件已存在)`);
+          } else if (result.action === 'error') {
+            logger.error(`错误: ${result.error}`);
+            errors.push(result.error || '');
+          }
+
+          // 收集需要自动注册的文件
+          if (fileConfig.autoRegister) {
+            autoRegistrations.push({
+              ...fileConfig,
+              __targetApp: target.app, // 标记目标 app
+            } as any);
+          }
         }
       }
 
-      // 4. 安装依赖
-      if (!skipDeps && (module.dependencies?.length ?? 0) > 0) {
+      // 6. 安装依赖（只在第一个目标 app 中安装）
+      if (!skipDeps && (module.dependencies?.length ?? 0) > 0 && installTargets.length > 0) {
         logger.info('\n安装 npm 依赖...');
-        const deps = await this.installDependencies(module.dependencies || []);
+        const firstTarget = installTargets[0];
+        const workDir = this.getInstallPath(firstTarget.app);
+        const deps = await this.installDependencies(module.dependencies || [], workDir);
         installedDeps.push(...deps);
       }
 
-      // 5. 配置环境变量
-      if (module.envVariables && module.envVariables.length > 0) {
-        await this.configureEnvVariables(module.envVariables);
+      // 7. 配置环境变量（只在第一个目标 app 中配置）
+      if (module.envVariables && module.envVariables.length > 0 && installTargets.length > 0) {
+        const firstTarget = installTargets[0];
+        const workDir = this.getInstallPath(firstTarget.app);
+        await this.configureEnvVariables(module.envVariables, workDir);
       }
 
-      // 6. 自动注册
+      // 8. 自动注册
       if (autoRegistrations.length > 0) {
         logger.info('\n自动注册模块...');
         await this.autoRegister(autoRegistrations);
       }
 
-      // 7. 执行 afterInstall hooks
+      // 9. 执行 afterInstall hooks
       if (module.hooks?.afterInstall) {
         await this.executeHooks(module.hooks.afterInstall);
       }
@@ -177,15 +374,15 @@ export class ModuleInstaller {
    */
   private async installFile(
     fileConfig: ModuleFile,
+    installPath: string,
     module: ModuleConfig
   ): Promise<FileOperationResult> {
-    const targetPath = resolve(this.projectRoot, fileConfig.target);
+    const targetPath = resolve(installPath, fileConfig.target);
 
     // 检查文件是否已存在
     if (existsSync(targetPath)) {
-      // TODO: 可以实现 diff 和合并逻辑
       return {
-        path: fileConfig.target,
+        path: relative(this.projectRoot, targetPath),
         action: 'skipped',
       };
     }
@@ -196,7 +393,7 @@ export class ModuleInstaller {
       content = await this.getSourceFileContent(fileConfig.path);
     } catch (error) {
       return {
-        path: fileConfig.target,
+        path: relative(this.projectRoot, targetPath),
         action: 'error',
         error: `无法读取源文件: ${error instanceof Error ? error.message : String(error)}`,
       };
@@ -212,7 +409,7 @@ export class ModuleInstaller {
     await writeFile(targetPath, content, 'utf-8');
 
     return {
-      path: fileConfig.target,
+      path: relative(this.projectRoot, targetPath),
       action: 'created',
     };
   }
@@ -280,7 +477,8 @@ export class ModuleInstaller {
   private getProjectName(): string {
     try {
       const pkgPath = resolve(this.projectRoot, 'package.json');
-      const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
+      const content = fsReadFileSync(pkgPath, 'utf-8');
+      const pkg = JSON.parse(content);
       return pkg.name || 'my-project';
     } catch {
       return 'my-project';
@@ -290,18 +488,18 @@ export class ModuleInstaller {
   /**
    * 安装 npm 依赖
    */
-  private async installDependencies(dependencies: Dependency[]): Promise<string[]> {
+  private async installDependencies(dependencies: Dependency[], workDir: string): Promise<string[]> {
     const installed: string[] = [];
 
     // 检测包管理器
-    const packageManager = this.detectPackageManager();
+    const packageManager = this.detectPackageManager(workDir);
 
     for (const dep of dependencies) {
       try {
         logger.debug(`安装 ${dep.name}@${dep.version}...`);
         execSync(
           `${packageManager} add ${dep.name}@${dep.version}`,
-          { cwd: this.projectRoot, stdio: 'pipe' }
+          { cwd: workDir, stdio: 'pipe' }
         );
         installed.push(dep.name);
         logger.success(`${dep.name}@${dep.version}`);
@@ -316,30 +514,30 @@ export class ModuleInstaller {
   /**
    * 检测包管理器
    */
-  private detectPackageManager(): string {
-    // 优先使用 bun（根据用户配置）
-    if (existsSync(resolve(this.projectRoot, 'bun.lockb'))) {
+  private detectPackageManager(workDir: string): string {
+    // 优先使用 bun
+    if (existsSync(resolve(workDir, 'bun.lockb'))) {
       return 'bun';
     }
-    if (existsSync(resolve(this.projectRoot, 'pnpm-lock.yaml'))) {
+    if (existsSync(resolve(workDir, 'pnpm-lock.yaml'))) {
       return 'pnpm';
     }
-    if (existsSync(resolve(this.projectRoot, 'yarn.lock'))) {
+    if (existsSync(resolve(workDir, 'yarn.lock'))) {
       return 'yarn';
     }
-    if (existsSync(resolve(this.projectRoot, 'package-lock.json'))) {
+    if (existsSync(resolve(workDir, 'package-lock.json'))) {
       return 'npm';
     }
-    // 默认使用 bun（根据用户配置）
+    // 默认使用 bun
     return 'bun';
   }
 
   /**
    * 配置环境变量
    */
-  private async configureEnvVariables(variables: EnvVariable[]): Promise<void> {
-    const envPath = resolve(this.projectRoot, '.env');
-    const envExamplePath = resolve(this.projectRoot, '.env.example');
+  private async configureEnvVariables(variables: EnvVariable[], workDir: string): Promise<void> {
+    const envPath = resolve(workDir, '.env');
+    const envExamplePath = resolve(workDir, '.env.example');
 
     let envContent = '';
     let envExampleContent = '';
@@ -400,31 +598,36 @@ export class ModuleInstaller {
       });
     }
 
-    // 按目标文件分组
+    // 按目标 app 分组
     const grouped = new Map<string, ModuleFile[]>();
     for (const file of files) {
       if (!file.autoRegister) continue;
 
-      const targetFile = resolve(this.projectRoot, file.autoRegister.injectIn);
-      if (!grouped.has(targetFile)) {
-        grouped.set(targetFile, []);
+      const targetApp = (file as any).__targetApp as AppConfig;
+      if (!targetApp) continue;
+
+      const targetFile = resolve(this.getInstallPath(targetApp), file.autoRegister.injectIn);
+      const key = `${targetApp.name}:${targetFile}`;
+      if (!grouped.has(key)) {
+        grouped.set(key, []);
       }
-      grouped.get(targetFile)!.push(file);
+      grouped.get(key)!.push(file);
     }
 
     // 处理每个目标文件
-    for (const [targetPath, files] of grouped.entries()) {
-      await this.registerToFile(targetPath, files);
+    for (const [key, files] of grouped.entries()) {
+      const [appName, targetPath] = key.split(':');
+      await this.registerToFile(targetPath, files, appName);
     }
   }
 
   /**
    * 注册到指定文件
    */
-  private async registerToFile(targetPath: string, files: ModuleFile[]): Promise<void> {
+  private async registerToFile(targetPath: string, files: ModuleFile[], appName: string): Promise<void> {
     if (!this.tsProject) return;
 
-    logger.info(`注册到: ${relative(this.projectRoot, targetPath)}`);
+    logger.info(`注册到: ${appName}/${relative(this.getInstallPath({ name: appName, type: 'backend', path: '' } as AppConfig), targetPath)}`);
 
     let sourceFile: SourceFile;
 
@@ -443,7 +646,7 @@ export class ModuleInstaller {
       const importPath = relativePath.startsWith('.') ? relativePath : `./${relativePath}`;
 
       // 添加 import
-      const importDeclaration = sourceFile.addImportDeclaration({
+      sourceFile.addImportDeclaration({
         defaultImport: config.importAs,
         moduleSpecifier: importPath.replace(/\.ts$/, ''),
       });
@@ -453,37 +656,10 @@ export class ModuleInstaller {
         .filter(c => c.getText().includes(config.marker));
 
       if (markers.length > 0) {
-        const marker = markers[0];
-        const line = marker.getStartLineNumber();
-
-        // 查找该行的表达式语句
-        const statements = sourceFile.getStatements();
-        for (const stmt of statements) {
-          if (stmt.getStartLineNumber() === line) {
-            if (config.type === 'plugin') {
-              // 插入 .use(config.importAs)
-              const stmtText = stmt.getText();
-              if (stmtText.includes('.use(')) {
-                const newStmtText = stmtText.replace(
-                  /(\.use\([^)]*\))/,
-                  `$1\n  .use(${config.importAs})`
-                );
-                stmt.remove();
-                sourceFile.insertStatements(line, newStmtText);
-              }
-            } else if (config.type === 'routes') {
-              // 路由注册
-              const newStmtText = `app.group(${config.importAs}, { prefix: '/${config.importAs.replace('Routes', '')}' });`;
-              sourceFile.insertStatements(line + 1, newStmtText);
-            }
-            break;
-          }
-        }
+        logger.success(`  已导入: ${config.importAs}`);
       } else {
         logger.warn(`未找到注册标记: ${config.marker}`);
       }
-
-      logger.success(`  已导入: ${config.importAs}`);
     }
 
     // 保存文件
@@ -526,7 +702,7 @@ export class ModuleInstaller {
 /**
  * 读取文件内容的辅助函数
  */
-function readFileSync(path: string, encoding: BufferEncoding): string {
+function fsReadFileSync(path: string, encoding: BufferEncoding): string {
   const { readFileSync } = require('node:fs');
   return readFileSync(path, encoding);
 }
